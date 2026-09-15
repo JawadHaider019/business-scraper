@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: scraper-rx2k
+    runtime: node
+    buildCommand: npm ci && npx playwright install --with-deps chromium
+    startCommand: npm start
+    envVars:
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: '0'
