@@ -1832,6 +1832,129 @@ function extractProductNameForCard($, cardEl, page, brandName) {
 
 // =========================================================================
 // 🚀 MASTER SCRAPER ORCHESTRATOR
+let globalBrowser = null;
+let globalBrowserPromise = null;
+
+async function getBrowserInstance() {
+  const isHeadless =
+    process.env.PLAYWRIGHT_HEADLESS !== 'false' &&
+    process.env.PUPPETEER_HEADLESS !== 'false' &&
+    process.env.HEADLESS !== 'false';
+
+  if (globalBrowser && globalBrowser.isConnected()) {
+    return globalBrowser;
+  }
+
+  if (globalBrowserPromise) {
+    return globalBrowserPromise;
+  }
+
+  globalBrowserPromise = (async () => {
+    try {
+      const browser = await chromium.launch({
+        headless: isHeadless,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--no-zygote',
+          '--disable-background-networking',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-breakpad',
+          '--disable-client-side-phishing-detection',
+          '--disable-component-update',
+          '--disable-default-apps',
+          '--disable-domain-reliability',
+          '--disable-extensions',
+          '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process',
+          '--disable-ipc-flooding-protection',
+          '--disable-renderer-backgrounding',
+          '--disable-sync',
+          '--force-color-profile=srgb',
+          '--metrics-recording-only',
+          '--mute-audio',
+          '--no-first-run'
+        ]
+      });
+
+      browser.on('disconnected', () => {
+        globalBrowser = null;
+        globalBrowserPromise = null;
+      });
+
+      globalBrowser = browser;
+      return browser;
+    } catch (err) {
+      globalBrowser = null;
+      globalBrowserPromise = null;
+      throw err;
+    }
+  })();
+
+  return globalBrowserPromise;
+}
+
+async function closeBrowserInstance() {
+  if (globalBrowser) {
+    try {
+      await globalBrowser.close();
+    } catch {}
+    globalBrowser = null;
+    globalBrowserPromise = null;
+  }
+}
+
+async function fetchSubpageHttp(url, type) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,de;q=0.8'
+      },
+      redirect: 'follow'
+    });
+    clearTimeout(timeoutId);
+
+    if (!resp.ok) return null;
+
+    const html = await resp.text();
+    if (!html || html.length < 150) return null;
+
+    const sub$ = cheerio.load(html);
+    const subText = extractTextWithSpaces(sub$, sub$('body'));
+
+    // Check if the page has usable content (if < 60 chars, could be dynamic SPA shell)
+    if (!subText || subText.length < 60) {
+      return null;
+    }
+
+    const finalUrl = resp.url || url;
+    const subExtracted = extractPage(sub$, finalUrl, type || 'other');
+
+    return {
+      type: type,
+      page_type: type,
+      url: finalUrl,
+      $: sub$,
+      text: subText || subExtracted.text,
+      ...subExtracted
+    };
+  } catch {
+    return null;
+  }
+}
+
+// =========================================================================
+// 🚀 MASTER SCRAPER ORCHESTRATOR
 // =========================================================================
 
 async function scrapeWebsite(rawUrl, options = {}) {
@@ -1845,18 +1968,24 @@ async function scrapeWebsite(rawUrl, options = {}) {
   let browser = null;
   let context = null;
   let page = null;
+  const isIsolated = options.isolateBrowser === true;
 
   try {
-    browser = await chromium.launch({
-      headless: isHeadless,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu'
-      ]
-    });
+    if (isIsolated) {
+      browser = await chromium.launch({
+        headless: isHeadless,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--no-zygote'
+        ]
+      });
+    } else {
+      browser = await getBrowserInstance();
+    }
 
     context = await browser.newContext({
       viewport: { width: 1920, height: 1080 },
@@ -1868,10 +1997,10 @@ async function scrapeWebsite(rawUrl, options = {}) {
       ignoreHTTPSErrors: true
     });
 
-    // Abort heavy media/font/image requests for blazing fast page loads
+    // Abort heavy media/font/image/stylesheet requests for blazing fast page loads
     await context.route('**/*', route => {
       const resourceType = route.request().resourceType();
-      if (['media', 'font', 'image'].includes(resourceType)) {
+      if (['media', 'font', 'image', 'stylesheet'].includes(resourceType)) {
         route.abort().catch(() => {});
       } else {
         route.continue().catch(() => {});
@@ -1885,9 +2014,6 @@ async function scrapeWebsite(rawUrl, options = {}) {
         waitUntil: 'domcontentloaded',
         timeout
       });
-      try {
-        await page.waitForLoadState('networkidle', { timeout: Math.min(2500, timeout) });
-      } catch {}
     } catch (navError) {
       if (navError.name === 'TimeoutError' || /timeout/i.test(navError.message)) {
         try {
@@ -1898,7 +2024,8 @@ async function scrapeWebsite(rawUrl, options = {}) {
       }
     }
 
-    await new Promise(resolve => setTimeout(resolve, 400));
+    // Fast stabilization wait for DOM hydration
+    await new Promise(resolve => setTimeout(resolve, 300));
 
     const renderedHtml = await page.content();
     const finalUrl = page.url() || targetUrl;
@@ -1929,61 +2056,54 @@ async function scrapeWebsite(rawUrl, options = {}) {
       queuedUrls.add(n);
     }
 
-    // 2. Render important subpages with concurrent Playwright worker tabs
+    // 2. Ultra-Fast Hybrid Subpage Crawling (Parallel HTTP + Cheerio first, Playwright fallback)
     const subpageResults = [];
-    const CONCURRENCY = 3;
+    const fallbackQueue = [];
 
-    async function crawlWorker() {
-      while (queue.length > 0) {
-        const item = queue.shift();
-        if (!item) break;
-        const norm = item.normUrl || normalizeUrl(item.url);
-        if (visited.has(norm)) continue;
-        visited.add(norm); // ← mark visited immediately after shift, before goto
+    const httpPromises = queue.map(async item => {
+      const norm = item.normUrl || normalizeUrl(item.url);
+      if (visited.has(norm)) return;
+      visited.add(norm);
 
+      const httpResult = await fetchSubpageHttp(item.url, item.type);
+      if (httpResult) {
+        subpageResults.push(httpResult);
+      } else {
+        fallbackQueue.push(item);
+      }
+    });
+
+    await Promise.all(httpPromises);
+
+    // If any pages failed HTTP (e.g. JS-heavy SPAs), render them with Playwright fallback
+    if (fallbackQueue.length > 0 && context) {
+      for (const item of fallbackQueue.slice(0, 3)) {
         let subPage = null;
         try {
           subPage = await context.newPage();
           await subPage.goto(item.url, {
             waitUntil: 'domcontentloaded',
-            timeout: 12000
+            timeout: 8000
           });
-          try {
-            await subPage.waitForLoadState('networkidle', { timeout: 1500 });
-          } catch {}
+          await new Promise(resolve => setTimeout(resolve, 200));
 
           const subHtml = await subPage.content();
-          if (!subHtml) continue;
+          if (subHtml) {
+            const sub$ = cheerio.load(subHtml);
+            const subText = extractTextWithSpaces(sub$, sub$('body'));
+            const subExtracted = extractPage(sub$, subPage.url() || item.url, item.type || 'other');
 
-          const sub$ = cheerio.load(subHtml);
-          const subText = extractTextWithSpaces(sub$, sub$('body'));
-          const subExtracted = extractPage(sub$, subPage.url() || item.url, item.type || 'other');
-
-          subpageResults.push({
-            type: item.type,
-            page_type: item.type,
-            url: subPage.url() || item.url,
-            $: sub$,
-            text: subText || subExtracted.text,
-            ...subExtracted
-          });
-
-          // If depth < 1, enqueue internal links discovered on this subpage
-          if (item.depth < 1 && subExtracted.links && Array.isArray(subExtracted.links.internal)) {
-            for (const link of subExtracted.links.internal) {
-              const linkNorm = normalizeUrl(link);
-              if (visited.has(linkNorm) || queuedUrls.has(linkNorm)) continue;
-              if (/\.(png|jpg|jpeg|gif|svg|pdf|zip|css|js|woff|woff2|xml|json|ico)$/i.test(linkNorm)) continue;
-              if (/\/(login|signin|signup|register|cart|checkout|admin|auth|logout|wp-admin)/i.test(linkNorm)) continue;
-              const { score, type } = scoreAndCategorizeLink(new URL(linkNorm).pathname, '');
-              if (score >= 6) {
-                queue.push({ url: link, normUrl: linkNorm, type, depth: item.depth + 1, score });
-                queuedUrls.add(linkNorm);
-              }
-            }
+            subpageResults.push({
+              type: item.type,
+              page_type: item.type,
+              url: subPage.url() || item.url,
+              $: sub$,
+              text: subText || subExtracted.text,
+              ...subExtracted
+            });
           }
-        } catch (error) {
-          // Navigation error or timeout for this subpage, skip gracefully
+        } catch {
+          // Gracefully skip failed fallback page
         } finally {
           if (subPage) {
             try { await subPage.close(); } catch {}
@@ -1991,9 +2111,6 @@ async function scrapeWebsite(rawUrl, options = {}) {
         }
       }
     }
-
-    const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, () => crawlWorker());
-    await Promise.all(workers);
 
     // Deduplicate allPages strictly by normalized URL
     const seenPages = new Set();
@@ -2172,7 +2289,7 @@ async function scrapeWebsite(rawUrl, options = {}) {
         await context.close();
       } catch {}
     }
-    if (browser) {
+    if (isIsolated && browser) {
       try {
         await browser.close();
       } catch {}
@@ -2337,5 +2454,7 @@ function extractOpeningHours($, jsonLdOrg) {
 
 module.exports = {
   scrapeWebsite,
-  normalizeUrl
+  normalizeUrl,
+  getBrowserInstance,
+  closeBrowserInstance
 };

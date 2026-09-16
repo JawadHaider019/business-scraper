@@ -4,7 +4,7 @@ if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
 }
 const express = require('express');
 const cors = require('cors');
-const { scrapeWebsite } = require('./scraper');
+const { scrapeWebsite, getBrowserInstance, closeBrowserInstance } = require('./scraper');
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 5000;
@@ -15,6 +15,11 @@ app.use(express.json());
 // Root route to show the server is working
 app.get('/', (req, res) => {
     res.send('Website Scraper is working! 🚀');
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime() });
 });
 
 app.post('/api/scrape', async (req, res) => {
@@ -45,6 +50,11 @@ app.post('/api/scrape', async (req, res) => {
 
 const server = app.listen(PORT, () => {
     console.log(`Website Scraper API is running on http://localhost:${PORT}`);
+    
+    // Warm up Chromium instance in background
+    getBrowserInstance()
+        .then(() => console.log('🚀 Chromium browser instance warmed up and ready.'))
+        .catch(err => console.warn('⚠️ Chromium background warmup warning:', err.message));
 });
 
 server.on('error', (err) => {
@@ -53,4 +63,17 @@ server.on('error', (err) => {
     } else {
         console.error(`❌ Server error:`, err);
     }
+});
+
+// Graceful cleanup
+process.on('SIGINT', async () => {
+    console.log('Shutting down server and browser...');
+    await closeBrowserInstance();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log('Shutting down server and browser...');
+    await closeBrowserInstance();
+    process.exit(0);
 });

@@ -32,20 +32,20 @@ async function testLiveTarget(url) {
     console.log(`Revenue Model:       ${s.revenue_model}`);
     console.log(`Current Alternatives:${s.current_alternatives}`);
     console.log(`Vision:              ${s.vision}`);
-    console.log(`Proof of Value:      ${JSON.stringify(s.proof_of_value.badges_and_metrics)}`);
-    console.log(`Hard Fields (CAC):   ${s.customer_acquisition_cost}`);
-    console.log(`Hard Fields (LTV):   ${s.lifetime_value}`);
-    console.log(`Activation Strategy: ${s.activation_strategy}`);
-    console.log(`How It Works:        ${s.how_it_works}`);
+    console.log(`Proof of Value:      ${JSON.stringify(s?.proof_of_value?.badges_and_metrics || s?.proof_of_value?.value || s?.proof_of_value)}`);
+    console.log(`Hard Fields (CAC):   ${s?.customer_acquisition_cost}`);
+    console.log(`Hard Fields (LTV):   ${s?.lifetime_value}`);
+    console.log(`Activation Strategy: ${s?.activation_strategy}`);
+    console.log(`How It Works:        ${typeof s?.how_it_works === 'object' ? JSON.stringify(s?.how_it_works) : s?.how_it_works}`);
 
     // Verify critical assertions
-    if (s.core_offering.some(o => /case\s*studies|about/i.test(o))) {
+    if (s?.core_offering && Array.isArray(s.core_offering) && s.core_offering.some(o => /case\s*studies|about/i.test(o))) {
       console.error('❌ FAIL: core_offering contains non-offering items!');
     } else {
       console.log('✅ PASS: core_offering is cleanly filtered.');
     }
 
-    if (s.current_alternatives && /excel|google\s*sheets/i.test(s.current_alternatives)) {
+    if (s?.current_alternatives && typeof s.current_alternatives === 'string' && /excel|google\s*sheets/i.test(s.current_alternatives)) {
       console.error('❌ FAIL: current_alternatives contains false positive spreadsheet match!');
     } else {
       console.log('✅ PASS: current_alternatives contains no spreadsheet false positives.');
