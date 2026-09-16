@@ -1953,6 +1953,86 @@ async function fetchSubpageHttp(url, type) {
   }
 }
 
+function buildAllDataString(summaryData) {
+  const parts = [];
+
+  const add = (label, value) => {
+    if (value === null || value === undefined) return;
+    let str = '';
+    if (typeof value === 'string') {
+      str = value.trim();
+    } else if (Array.isArray(value)) {
+      str = value
+        .map(v => {
+          if (typeof v === 'string') return v.trim();
+          if (typeof v === 'object' && v !== null) {
+            return v.value || v.name || v.text || (v.url ? `${v.type || 'page'}: ${v.url}` : JSON.stringify(v));
+          }
+          return String(v).trim();
+        })
+        .filter(Boolean)
+        .join(', ');
+    } else if (typeof value === 'object') {
+      if (value.value && typeof value.value === 'string') {
+        str = value.value.trim();
+      } else {
+        const subEntries = Object.entries(value)
+          .filter(([_, v]) => v !== null && v !== undefined && v !== '')
+          .map(([k, v]) => `${k}: ${typeof v === 'object' ? (v.value || JSON.stringify(v)) : v}`);
+        if (subEntries.length > 0) {
+          str = subEntries.join(', ');
+        }
+      }
+    } else {
+      str = String(value).trim();
+    }
+
+    if (str) {
+      str = str.replace(/\s+/g, ' ');
+      parts.push(`${label}: ${str}`);
+    }
+  };
+
+  // Meta & Core Info
+  add('title', summaryData.meta?.title);
+  add('name', summaryData.name);
+  add('description', summaryData.description || summaryData.meta?.description);
+  add('website', summaryData.website);
+  add('email', summaryData.email);
+  add('phone', summaryData.phone);
+  add('address', summaryData.address);
+  if (!summaryData.address) {
+    add('street', summaryData.street);
+    add('city', summaryData.city);
+    add('postal_code', summaryData.postal_code);
+    add('country', summaryData.country);
+  }
+  add('logo', summaryData.logo);
+  add('social_links', summaryData.social_links);
+  add('opening_hours', summaryData.opening_hours);
+  add('keywords', summaryData.meta?.keywords);
+
+  // Business Strategy Dimensions
+  const bs = summaryData.business_strategy || {};
+  add('target_audience', bs.target_audience);
+  add('value_proposition', bs.value_proposition);
+  add('core_offering', bs.core_offering);
+  add('differentiator', bs.differentiator);
+  add('revenue_model', bs.revenue_model);
+  add('pricing_strategy', bs.pricing_strategy);
+  add('current_alternatives', bs.current_alternatives);
+  add('vision', bs.vision);
+  add('proof_of_value', bs.proof_of_value);
+  add('how_it_works', bs.how_it_works);
+  add('customer_pain', bs.customer_pain);
+  add('activation_strategy', bs.activation_strategy);
+  add('retention_strategy', bs.retention_strategy);
+  add('competitive_landscape', bs.competitive_landscape);
+  add('strategic_moat', bs.strategic_moat);
+
+  return parts.join(', ');
+}
+
 // =========================================================================
 // 🚀 MASTER SCRAPER ORCHESTRATOR
 // =========================================================================
@@ -2230,6 +2310,24 @@ async function scrapeWebsite(rawUrl, options = {}) {
       all_page_headings:      signals.all_page_headings || [],
     };
 
+    const allData = buildAllDataString({
+      name,
+      description,
+      email,
+      phone,
+      address: addressData.address,
+      street: addressData.street,
+      postal_code: addressData.postal_code,
+      city: addressData.city,
+      country: addressData.country,
+      website: meta.canonical || finalUrl,
+      logo,
+      social_links: socialLinks,
+      opening_hours: openingHours,
+      business_strategy: businessStrategy,
+      meta: metaSummary
+    });
+
     // Summary data (~300 lines) — production API response for Postman / clients
     const summaryData = {
       name,
@@ -2249,7 +2347,8 @@ async function scrapeWebsite(rawUrl, options = {}) {
       business_strategy: businessStrategy,
       meta: metaSummary,
       signals: summarySignals,
-      crawled_pages: crawledPages
+      crawled_pages: crawledPages,
+      all_data: allData
     };
 
     // Raw full extraction (~2500 lines) — ships to Pass 2 LLM / debugging
