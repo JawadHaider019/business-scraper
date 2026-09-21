@@ -2104,10 +2104,22 @@ async function scrapeWebsite(rawUrl, options = {}) {
       }
     }
 
-    // Fast stabilization wait for DOM hydration
-    await new Promise(resolve => setTimeout(resolve, 300));
+    // Settle step for SPA hydration & dynamic client navigation
+    await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1500).catch(() => {}); // let SPAs finish route changes
 
-    const renderedHtml = await page.content();
+    // Now retry content() safely to prevent race condition during in-flight navigations
+    let renderedHtml;
+    for (let i = 0; i < 3; i++) {
+      try {
+        renderedHtml = await page.content();
+        break;
+      } catch (err) {
+        if (i === 2) throw err;
+        await page.waitForTimeout(1000).catch(() => {});
+      }
+    }
     const finalUrl = page.url() || targetUrl;
     const finalNorm = normalizeUrl(finalUrl);
 
@@ -2165,9 +2177,20 @@ async function scrapeWebsite(rawUrl, options = {}) {
             waitUntil: 'domcontentloaded',
             timeout: 8000
           });
-          await new Promise(resolve => setTimeout(resolve, 200));
+          await subPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+          await subPage.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+          await subPage.waitForTimeout(1000).catch(() => {});
 
-          const subHtml = await subPage.content();
+          let subHtml = null;
+          for (let i = 0; i < 3; i++) {
+            try {
+              subHtml = await subPage.content();
+              break;
+            } catch (err) {
+              if (i === 2) throw err;
+              await subPage.waitForTimeout(500).catch(() => {});
+            }
+          }
           if (subHtml) {
             const sub$ = cheerio.load(subHtml);
             const subText = extractTextWithSpaces(sub$, sub$('body'));
