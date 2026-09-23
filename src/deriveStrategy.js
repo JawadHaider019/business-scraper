@@ -1,5 +1,5 @@
-// src/deriveStrategy.js — signal-composition version
-// Precision over recall. Only extract from structured signals. No prose guessing.
+// src/deriveStrategy.js — deterministic business_strategy extraction
+// Precision over recall. Only extract from structured signals.
 
 function deriveStrategy(data) {
   if (!data) return {};
@@ -8,40 +8,14 @@ function deriveStrategy(data) {
   const allPages = (data.pages || data.allPages || Object.values(pagesByType).flat() || []);
 
   return {
-    // ─────────────────────────────────────────────
-    // Extracted from signals (100% reliable)
-    // ─────────────────────────────────────────────
-
-    // Numeric metrics — proof of value
     proof_of_value: buildProofOfValue(sig.all_numeric_claims, allPages),
-
-    // Plan cards — pricing
     pricing_strategy: buildPricingStrategy(sig.all_plan_cards, allPages),
-
-    // Contrast sentences from "unlike X" / "instead of X"
-    // Only kept if it names a market alternative (custom/traditional/manual)
-    current_alternatives: buildCurrentAlternatives(
-      sig.all_contrast_sentences,
-      allPages
-    ),
-
-    // How-it-works flows (already vetted: 2-6 steps, no HTML)
-    how_it_works: buildHowItWorks(sig.how_it_works_by_page),
-
-    // ─────────────────────────────────────────────
-    // Derived from structured signals (deterministic)
-    // ─────────────────────────────────────────────
-
-    // Competitive landscape: category default from name/description
+    current_alternatives: buildCurrentAlternatives(sig.all_contrast_sentences, allPages),
+    how_it_works: buildHowItWorks(sig.how_it_works_by_page, pagesByType),
     competitive_landscape: buildCompetitiveLandscape(data),
-
-    // Strategic moat: only positive claim if "patent"/"proprietary" present
     strategic_moat: buildStrategicMoat(sig, pagesByType, allPages),
 
-    // ─────────────────────────────────────────────
-    // Honest nulls — cannot be extracted reliably from prose
-    // ─────────────────────────────────────────────
-
+    // Honest null — requires AI to extract
     target_audience:               null,
     customer_pain:                 null,
     value_proposition:             null,
@@ -67,47 +41,34 @@ function deriveStrategy(data) {
   };
 }
 
-// ─────────────────────────────────────────────
-// Builders — each pulls only from structured signals
-// ─────────────────────────────────────────────
-
 function buildProofOfValue(claims, allPages) {
   if (!claims || !claims.length) return null;
 
-  // 1. Filter to legitimate claims
   const good = claims.filter(c => {
     if (!c || typeof c !== 'string') return false;
     const trimmed = c.trim();
-    // Must have a comma or a "+" AND a number >= 500
     const digits = trimmed.replace(/[^\d]/g, '');
     const n = parseInt(digits, 10);
     if (isNaN(n) || n < 500) return false;
-
-    // Must be "N noun" or "N+ noun", not a fragment
     if (!/^[\d,]+\+?\s+\w+/i.test(trimmed)) return false;
-
-    // Exclude generic nouns that aren't proof of scale
     if (/\b(listings?|products?|apps?|items?|results?)\b/i.test(trimmed)) return false;
-
     return true;
   });
 
   if (!good.length) return null;
 
-  // 2. Dedupe by (number, unit) — 68,148 vs 68,151 collapse to one
   const byUnit = new Map();
   for (const c of good) {
     const trimmed = c.trim();
     const m = trimmed.match(/^([\d,]+)\+?\s+(\w+)/i);
     if (!m) continue;
-    const unit = m[2].toLowerCase().replace(/s$/, ''); // "actors" → "actor"
+    const unit = m[2].toLowerCase().replace(/s$/, '');
     const n = parseInt(m[1].replace(/,/g, ''), 10);
     if (!byUnit.has(unit) || byUnit.get(unit).n < n) {
       byUnit.set(unit, { n, text: trimmed });
     }
   }
 
-  // 3. Cap at 3, prefer homepage-sourced claims
   const homepageText = (allPages || [])
     .filter(p => p.url && p.url.split('/').length <= 4)
     .map(p => (p.paragraphs || []).join(' '))
@@ -115,11 +76,7 @@ function buildProofOfValue(claims, allPages) {
 
   const final = [...byUnit.values()]
     .map(v => v.text)
-    .sort((a, b) => {
-      const aOnHome = homepageText.includes(a) ? 1 : 0;
-      const bOnHome = homepageText.includes(b) ? 1 : 0;
-      return bOnHome - aOnHome;
-    })
+    .sort((a, b) => (homepageText.includes(b) ? 1 : 0) - (homepageText.includes(a) ? 1 : 0))
     .slice(0, 3);
 
   if (!final.length) return null;
@@ -141,11 +98,9 @@ function buildProofOfValue(claims, allPages) {
 function buildPricingStrategy(cards, allPages) {
   if (!cards || !cards.length) return null;
 
-  // Drop plan cards without a real price
   const priced = cards.filter(c => c && c.price && /\d/.test(c.price));
   if (!priced.length) return null;
 
-  // Deduplicate by (name, price)
   const seen = new Set();
   const unique = priced.filter(c => {
     const key = `${c.name || ''}::${c.price}`;
@@ -154,7 +109,6 @@ function buildPricingStrategy(cards, allPages) {
     return true;
   });
 
-  // Extract numeric prices for range
   const nums = unique
     .map(c => parseFloat(c.price.replace(/[^\d.]/g, '')))
     .filter(n => !isNaN(n) && n > 0);
@@ -163,9 +117,7 @@ function buildPricingStrategy(cards, allPages) {
 
   let value;
   if (names.length && nums.length) {
-    const min = Math.min(...nums);
-    const max = Math.max(...nums);
-    value = `Tiered plans (${names.slice(0, 5).join(', ')}) priced from $${min} to $${max}.`;
+    value = `Tiered plans (${names.slice(0, 5).join(', ')}) priced from $${Math.min(...nums)} to $${Math.max(...nums)}.`;
   } else if (names.length) {
     value = `Tiered plans: ${names.join(', ')}.`;
   } else if (nums.length) {
@@ -188,57 +140,94 @@ function buildPricingStrategy(cards, allPages) {
   };
 }
 
-function buildCurrentAlternatives(contrasts, allPages) {
+function isCleanText(text) {
+  if (!text || text.length < 20 || text.length > 500) return false;
+  if (/\\u00[0-9a-f]{2}/i.test(text)) return false;
+  if (/<[a-z][^>]*>/i.test(text)) return false;
+  if (/\{\s*\\?"[a-z]+\\?":/.test(text)) return false;
+  if (/[{}[\]<>]{3,}/.test(text)) return false;
+  if (/\\[nrt]/.test(text)) return false;
+
+  if (/\bvar\s+\w+\s*=|\bconst\s+\w+\s*=|\blet\s+\w+\s*=/.test(text)) return false;
+  if (/function\s*\(/.test(text)) return false;
+  if (/\b(addEventListener|querySelector|preventDefault|matchMedia|JSON\.parse|=>)/.test(text)) return false;
+  if (/[""]/.test(text) && /[:;{}]/.test(text) && text.length > 100) return false;
+  if (/"@type"|"_type"|"_key"|"@context"|"acceptedAnswer"/i.test(text)) return false;
+
+  if (/[A-Z]{4,}\d{3,}/.test(text)) return false;
+  if (/[a-z]\.[A-Z]/.test(text)) return false;
+  if (/\b(we('|')?ve been using|we selected|we chose|we picked|we started using)\b/i.test(text)) return false;
+  if ((text.match(/[""]/g) || []).length >= 4) return false;
+
+  return true;
+}
+
+function stripLeadingQuestion(text) {
+  if (!text || typeof text !== 'string') return '';
+  const m = text.match(/^[A-Z][^?]{5,80}\?\s*/);
+  return m ? text.slice(m[0].length) : text;
+}
+
+function buildCurrentAlternatives(contrasts, allPages = []) {
   if (!contrasts || !contrasts.length) return null;
 
-  // Must name a market alternative — not just any "instead of"
-  const MARKET_RE = /\b(custom|traditional|manual|legacy|offline|in-house|do[- ]it[- ]yourself|diy)\b/i;
-
-  const clean = contrasts.filter(c => {
-    if (!c || c.length < 30 || c.length > 400) return false;
-    if (/\\[nrt]/.test(c)) return false;
-    if (/[{}[\]<>]{3,}/.test(c)) return false;
-    if (!MARKET_RE.test(c)) return false;
-    return true;
-  });
+  const clean = contrasts
+    .map(stripLeadingQuestion)
+    .filter(isCleanText)
+    .filter(c => {
+      if (/^(this|the)\s+(article|post|blog|page|guide|report)\s+(explains|covers|describes|discusses|explores)/i.test(c)) return false;
+      if (/\b(learn|read|discover)\s+(more|how|why|what)\b/i.test(c) && c.length < 200) return false;
+      if (/^\d/.test(c)) return false;
+      if (/^(and|but|or|so|by|with|to|for)\s/i.test(c)) return false;
+      if (c.split(/\s+/).filter(Boolean).length < 8) return false;
+      if (!/^[A-Z]/.test(c)) return false;
+      return true;
+    })
+    .filter(c => /\b(custom|traditional|manual|legacy|offline|in-house|batch|scheduled|do[- ]it[- ]yourself|diy)\b/i.test(c));
 
   if (!clean.length) return null;
 
-  // Prefer sentences starting with "unlike" or "instead of"
-  const best = clean.sort((a, b) => {
-    const scoreA = /^(unlike|instead of|rather than)/i.test(a) ? 2 : 1;
-    const scoreB = /^(unlike|instead of|rather than)/i.test(b) ? 2 : 1;
-    return scoreB - scoreA;
-  })[0];
+  const pick = clean.find(c => /\binstead of\b|\bon traditional\b|\bunlike\b/i.test(c)) || clean[0];
+  const source = (allPages || []).find(p => (p.contrast_sentences || []).some(cs => cs.includes(pick)) || (p.text || '').includes(pick))?.url || null;
 
   return {
-    value: best.slice(0, 220),
-    evidence: [{
-      text: best,
-      source: (allPages || []).find(p =>
-        (p.contrast_sentences || []).includes(best) || (p.text || '').includes(best)
-      )?.url || null,
-    }],
+    value: pick.slice(0, 220),
+    evidence: [{ text: pick, source }],
     source_type: 'direct',
     confidence: 0.85,
-    validation: { reasoning: 'Contrast sentence naming a market alternative.' },
+    validation: { reasoning: 'Clean contrast sentence.' },
   };
 }
 
-function buildHowItWorks(byPage) {
+function looksLikeStep(s) {
+  if (!s || typeof s !== 'string') return false;
+  if (s.length < 20 || s.length > 200) return false;
+  if (/\\[nrt]/.test(s) || /[{}[\]<>]{3,}/.test(s)) return false;
+  if (/^[A-Z][a-z]+\s+[A-Z][a-z]+\s+(ML|AI|CEO|CTO|Engineer|Manager|Founder|Head|VP|Lead)/i.test(s)) return false;
+  if (/^(talk to|contact us|book a|get started|try it|learn more|see how|start)/i.test(s)) return false;
+  if (/^(the|a|an)\s/i.test(s) && s.split(' ').length < 5) return false;
+  if (!/\b(click|add|select|enter|configure|connect|upload|create|run|start|choose|specify|define|log in|sign up|open|download|export|receive|send|set|enable|deploy|publish|invite|integrate|tell)\b/i.test(s)
+      && !/^\d+\./.test(s)) return false;
+  return true;
+}
+
+function buildHowItWorks(byPage, pagesByType = {}) {
   if (!Array.isArray(byPage)) return null;
 
+  const TRUSTED_TYPES = new Set(['homepage', 'offerings', 'process', 'pricing']);
+  const allowedUrls = new Set();
+  for (const type of TRUSTED_TYPES) {
+    for (const p of pagesByType[type] || []) {
+      if (p && p.url) allowedUrls.add(p.url);
+    }
+  }
+
   const best = byPage
+    .filter(p => allowedUrls.size === 0 || allowedUrls.has(p.url))
     .filter(p => {
       const steps = p.steps || [];
       if (steps.length < 2 || steps.length > 6) return false;
-      return steps.every(s =>
-        typeof s === 'string' &&
-        s.length >= 8 &&
-        s.length <= 200 &&
-        !/\\[nrt]/.test(s) &&
-        !/[{}[\]<>]{3,}/.test(s)
-      );
+      return steps.every(looksLikeStep);
     })
     .sort((a, b) => b.steps.length - a.steps.length)[0];
 
@@ -249,7 +238,7 @@ function buildHowItWorks(byPage) {
     evidence: best.steps.map(s => ({ text: s, source: best.url })),
     source_type: 'direct',
     confidence: 0.9,
-    validation: { reasoning: 'Step flow (2-6 steps).' },
+    validation: { reasoning: 'Step flow (trusted page type).' },
   };
 }
 
@@ -294,23 +283,35 @@ function buildCompetitiveLandscape(data) {
 
 function buildStrategicMoat(sig, pagesByType, allPages) {
   const all = (allPages && allPages.length > 0) ? allPages : Object.values(pagesByType || {}).flat();
-  const STRONG = /\b(patent|certification|SOC\s*2|ISO\s*27001|proprietary|exclusive|cornered|network\s*effect)/i;
+  const STRONG = /\b(patent(?:ed)?|ISO\s*\d+|SOC\s*2|GDPR[- ]compliant|CCPA[- ]compliant|network\s*effect|switching\s*cost)\b/i;
 
   for (const p of all) {
-    for (const s of (p.paragraphs || []).concat((p.sections || []).map(sec => typeof sec === 'string' ? sec : sec.text || ''))) {
-      if (s && STRONG.test(s) && s.length > 30 && s.length < 250) {
-        return {
-          value: s.slice(0, 220),
-          evidence: [{ text: s, source: p.url }],
-          source_type: 'direct',
-          confidence: 0.8,
-          validation: { reasoning: 'Moat signal present.' },
-        };
-      }
+    const list = (p.paragraphs || []).concat((p.sections || []).map(sec => typeof sec === 'string' ? sec : sec.text || ''));
+    for (const s of list) {
+      if (!s || typeof s !== 'string') continue;
+      if (s.length < 30 || s.length > 300) continue;
+      if (!STRONG.test(s)) continue;
+
+      if (!isCleanText(s)) continue;
+      if (/[A-Z]{4,}\d{3,}/.test(s)) continue;
+      if (/[a-z]\.[A-Z]/.test(s)) continue;
+
+      const commaCount = (s.match(/,/g) || []).length;
+      const imperativeVerbs = (s.match(/\b(add|turn on|enable|configure|set|deploy|use|get|try)\b/gi) || []).length;
+      if (commaCount >= 3 && imperativeVerbs >= 1) continue;
+      if (imperativeVerbs >= 2) continue;
+      if (/\b(autoscale|deploy|configure|integrate|monitor)\b/i.test(s) && /\b(and|or)\b/i.test(s)) continue;
+
+      return {
+        value: s.slice(0, 220),
+        evidence: [{ text: s, source: p.url }],
+        source_type: 'direct',
+        confidence: 0.8,
+        validation: { reasoning: 'Moat signal present (non-feature).' },
+      };
     }
   }
 
-  // Scale-based inference only if claims exist
   const claims = (sig && sig.all_numeric_claims) || [];
   const big = claims.some(c => parseInt(String(c).replace(/[^\d]/g, ''), 10) >= 5000);
   if (big) {
@@ -333,3 +334,4 @@ function buildStrategicMoat(sig, pagesByType, allPages) {
 }
 
 module.exports = { deriveStrategy };
+

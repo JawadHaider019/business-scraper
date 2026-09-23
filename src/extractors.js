@@ -304,6 +304,25 @@ function extractPage($, url, pageType = 'other') {
     contrastSentences.push(clean(bodyText.slice(start, end)));
   }
 
+  function isCleanContrast(text) {
+    if (!text || text.length < 30 || text.length > 500) return false;
+    if (/\\u00[0-9a-f]{2}/i.test(text)) return false;
+    if (/<[a-z][^>]*>/i.test(text)) return false;
+    if (/[{}[\]<>]{3,}/.test(text)) return false;
+    if (/\bvar\s+\w+\s*=|\bconst\s+\w+\s*=|\blet\s+\w+\s*=/.test(text)) return false;
+    if (/\b(addEventListener|querySelector|preventDefault|matchMedia|JSON\.parse)\b/.test(text)) return false;
+    if (/function\s*\(/.test(text)) return false;
+    if (/classList|getElementById|\.style\.|data-[\w-]+=/.test(text)) return false;
+    if (/\/\*/.test(text) && /\*\//.test(text)) return false;   // JS block comments
+    if (text.startsWith('\\"') || text.includes('\\"}]}')) return false;   // JSON fragments
+
+    // Must look like prose: contain a verb, start with a letter
+    if (!/^[A-Z]/.test(text)) return false;
+    if (!/\b(is|are|was|were|has|have|provides|offers|uses|enables|delivers)\b/i.test(text)) return false;
+
+    return true;
+  }
+
   // ---- Fix 2 & Fix C: numbered steps with prefix deduplication ----
   const rawNumbered = dedupe(
     $content
@@ -392,7 +411,7 @@ function extractPage($, url, pageType = 'other') {
     step_patterns: stepPatterns,
     numbered_items: numberedItems,
     how_it_works_steps: dedupe(howItWorksSteps),
-    contrast_sentences: dedupe(contrastSentences),
+    contrast_sentences: dedupe(contrastSentences.filter(isCleanContrast)),
     numeric_claims: dedupe(numericClaims),
     plan_cards: planCards,
     links: { internal: dedupe(internalLinks), external: dedupe(externalLinks) },
