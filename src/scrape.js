@@ -1126,6 +1126,55 @@ async function scrapeWebsite(rawUrl, options = {}) {
       all_page_headings:      signals.all_page_headings || [],
     };
 
+    // Combine all extracted data/text with labels into a comma-separated string
+    const allDataPieces = [];
+    if (meta.title || allPages[0]?.title) allDataPieces.push(`title: ${meta.title || allPages[0]?.title}`);
+    if (name) allDataPieces.push(`name: ${name}`);
+    if (description) allDataPieces.push(`description: ${description}`);
+    if (email) allDataPieces.push(`email: ${email}`);
+    if (phone) allDataPieces.push(`phone: ${phone}`);
+    if (addressData.address) allDataPieces.push(`address: ${addressData.address}`);
+    if (addressData.street) allDataPieces.push(`street: ${addressData.street}`);
+    if (addressData.postal_code) allDataPieces.push(`postal_code: ${addressData.postal_code}`);
+    if (addressData.city) allDataPieces.push(`city: ${addressData.city}`);
+    if (addressData.country) allDataPieces.push(`country: ${addressData.country}`);
+    const websiteUrl = meta.canonical || finalUrl;
+    if (websiteUrl) allDataPieces.push(`website: ${websiteUrl}`);
+
+    const socialArr = Array.isArray(socialLinks) ? socialLinks : Object.values(socialLinks || {});
+    if (socialArr.length > 0) allDataPieces.push(`social_links: ${socialArr.join(' ')}`);
+
+    // Additional page texts and headings
+    for (const p of allPages) {
+      if (p.page_heading && p.page_heading !== meta.title && p.page_heading !== name) {
+        allDataPieces.push(`heading: ${p.page_heading}`);
+      }
+      if (Array.isArray(p.paragraphs)) {
+        for (const para of p.paragraphs) {
+          if (para && typeof para === 'string' && para.trim()) {
+            allDataPieces.push(para.trim());
+          }
+        }
+      }
+      if (Array.isArray(p.sections)) {
+        for (const sec of p.sections) {
+          const txt = typeof sec === 'string' ? sec : (sec && sec.text);
+          if (txt && typeof txt === 'string' && txt.trim()) {
+            allDataPieces.push(txt.trim());
+          }
+        }
+      }
+      if (Array.isArray(p.list_items)) {
+        for (const li of p.list_items) {
+          if (li && typeof li === 'string' && li.trim()) {
+            allDataPieces.push(li.trim());
+          }
+        }
+      }
+    }
+
+    const allDataString = [...new Set(allDataPieces.filter(Boolean))].join(', ');
+
     const summaryData = {
       name,
       description,
@@ -1146,7 +1195,7 @@ async function scrapeWebsite(rawUrl, options = {}) {
       signals: summarySignals,
       crawled_pages: crawledPages,
       pages_by_type: pagesByType,
-      all_data: null
+      all_data: allDataString
     };
 
     const rawData = {

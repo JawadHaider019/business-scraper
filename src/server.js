@@ -56,7 +56,8 @@ function trimForClient(rawData) {
     social_links,
     meta,
     business_strategy,
-    crawled_pages
+    crawled_pages,
+    all_data
   } = rawData;
 
   return {
@@ -70,7 +71,8 @@ function trimForClient(rawData) {
     social_links: social_links || null,
     meta: meta || null,
     business_strategy: business_strategy || null,
-    crawled_pages: crawled_pages || []
+    crawled_pages: crawled_pages || [],
+    all_data: all_data || null
   };
 }
 
